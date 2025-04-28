@@ -1,7 +1,7 @@
 use std::fs;
 
 use crate::{
-    crypto::{CurveParams, apply_hiding, generate_shuffled_positions},
+    crypto::{CurveParams, apply_hiding, encrypt_bytes, generate_shuffled_positions},
     error::FileShadowError,
 };
 
@@ -10,8 +10,16 @@ pub fn hide_file(
     cover_file: &str,
     params: &CurveParams,
     prng_seed: &[u8],
+    aes_key: Option<Vec<u8>>,
+    aes_iv: Option<Vec<u8>>,
 ) -> Result<usize, FileShadowError> {
-    let input_data = fs::read(input_file)?;
+    let mut input_data = fs::read(input_file)?;
+
+    if aes_key.is_some() && aes_iv.is_some() {
+        // Encrypt the input data if AES key and IV are provided
+        input_data = encrypt_bytes(&input_data, &aes_key.unwrap(), &aes_iv.unwrap())?;
+    }
+
     let mut cover_data = fs::read(cover_file)?;
     if cover_data.len() < input_data.len() * 2 {
         return Err(FileShadowError::CoverFileTooSmall);
@@ -29,5 +37,9 @@ pub fn hide_file(
     }
 
     fs::write(cover_file, cover_data)?;
+
+    // Delete the original input file
+    fs::remove_file(input_file)?;
+
     Ok(input_data.len())
 }

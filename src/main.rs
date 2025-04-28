@@ -1,6 +1,8 @@
+use aes_gcm::{AeadCore, Aes256Gcm, KeyInit, aead::OsRng};
 use clap::{Parser, Subcommand};
 use crypto::{
-    CurveParams, CurveType, compute_secret_key, generate_random_seed, retrieve_from_secret_key,
+    CurveParams, CurveType, compute_secret_key, generate_random_seed, key_and_nonce_to_string,
+    retrieve_from_secret_key, string_to_key_and_nonce,
 };
 use error::FileShadowError;
 
@@ -22,11 +24,19 @@ enum Commands {
     Hide {
         input_file: String,
         file_to_hide_in: String,
+
+        #[arg(long, default_value_t = false)]
+        gen_aes: bool,
+        #[arg(long)]
+        with_aes: Option<String>,
     },
     Retrieve {
         file: String,
         seckey_file: String,
         target_file: Option<String>,
+
+        #[arg(long)]
+        with_aes: Option<String>,
     },
 }
 
@@ -40,9 +50,42 @@ fn main() -> Result<(), FileShadowError> {
         Commands::Hide {
             input_file,
             file_to_hide_in,
+            gen_aes,
+            with_aes,
         } => {
-            let hidden_bytelen =
-                hide::hide_file(&input_file, &file_to_hide_in, &params, &prng_seed)?;
+            let mut aes_key: Option<Vec<u8>> = None;
+            let mut aes_nonce: Option<Vec<u8>> = None;
+
+            if gen_aes {
+                let key = Aes256Gcm::generate_key(&mut OsRng);
+                let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+
+                aes_key = Some(key.to_vec());
+                aes_nonce = Some(nonce.to_vec());
+
+                println!("AES key and nonce generated.");
+
+                let aes_str = key_and_nonce_to_string(&key, &nonce)?;
+                println!("AES key and nonce: {}", aes_str);
+                println!(
+                    "Use this string to retrieve the file. Store it securely, and seperate from any .seckey files."
+                );
+            } else if let Some(key_str) = with_aes {
+                if !key_str.is_empty() {
+                    let (key, nonce) = string_to_key_and_nonce(&key_str)?;
+                    aes_key = Some(key);
+                    aes_nonce = Some(nonce);
+                }
+            }
+
+            let hidden_bytelen = hide::hide_file(
+                &input_file,
+                &file_to_hide_in,
+                &params,
+                &prng_seed,
+                aes_key,
+                aes_nonce,
+            )?;
 
             let key = compute_secret_key(hidden_bytelen, &params, &prng_seed);
 
@@ -61,6 +104,7 @@ fn main() -> Result<(), FileShadowError> {
             file,
             seckey_file,
             target_file,
+            with_aes,
         } => {
             let secret_key = std::fs::read(seckey_file)?;
 
@@ -78,7 +122,26 @@ fn main() -> Result<(), FileShadowError> {
                 filename
             });
 
-            retrieve::retrieve_file(&file, &output_path, &params, bytelen, &prng_seed)?;
+            let mut aes_key: Option<Vec<u8>> = None;
+            let mut aes_nonce: Option<Vec<u8>> = None;
+
+            if let Some(key_str) = with_aes {
+                if !key_str.is_empty() {
+                    let (key, nonce) = string_to_key_and_nonce(&key_str)?;
+                    aes_key = Some(key);
+                    aes_nonce = Some(nonce);
+                }
+            }
+
+            retrieve::retrieve_file(
+                &file,
+                &output_path,
+                &params,
+                bytelen,
+                &prng_seed,
+                aes_key,
+                aes_nonce,
+            )?;
             println!("File retrieved to {}", output_path);
         }
     }
@@ -88,6 +151,7 @@ fn main() -> Result<(), FileShadowError> {
 
 #[cfg(test)]
 mod file_tests {
+    use aes_gcm::{AeadCore, KeyInit};
     use std::fs;
     use tempfile::NamedTempFile;
 
@@ -100,7 +164,6 @@ mod file_tests {
     #[test]
     fn test_hide_and_retrieve_file() {
         let original_data = b"Hello, FileShadow! This is a test.";
-        let data_length = original_data.len();
 
         let input_file = NamedTempFile::new().unwrap();
         let cover_file = NamedTempFile::new().unwrap();
@@ -119,17 +182,68 @@ mod file_tests {
             cover_file.path().to_str().unwrap(),
             &params,
             &prng_seed,
+            None,
+            None,
         )
         .unwrap();
 
-        assert_eq!(hidden_bytelen, data_length);
+        // Without encryption those should be identical
+        assert_eq!(hidden_bytelen, original_data.len());
 
         retrieve_file(
             cover_file.path().to_str().unwrap(),
             retrieved_file.path().to_str().unwrap(),
             &params,
-            data_length,
+            hidden_bytelen,
             &prng_seed,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let retrieved_data = fs::read(retrieved_file.path()).unwrap();
+
+        assert_eq!(original_data.to_vec(), retrieved_data);
+    }
+
+    #[test]
+    fn test_hide_and_retrieve_file_with_aes() {
+        let original_data = b"Hello, FileShadow! This is a test.";
+
+        let input_file = NamedTempFile::new().unwrap();
+        let cover_file = NamedTempFile::new().unwrap();
+        let retrieved_file = NamedTempFile::new().unwrap();
+
+        fs::write(input_file.path(), original_data).unwrap();
+
+        let cover_data = vec![0u8; original_data.len() * 3]; // 3 to compensate for AES padding
+        fs::write(cover_file.path(), cover_data).unwrap();
+
+        let params = CurveParams::random(CurveType::Hybrid);
+        let prng_seed = generate_random_seed();
+
+        let aes_key: Vec<u8> = aes_gcm::Aes256Gcm::generate_key(&mut aes_gcm::aead::OsRng).to_vec();
+        let aes_nonce: Vec<u8> =
+            aes_gcm::Aes256Gcm::generate_nonce(&mut aes_gcm::aead::OsRng).to_vec();
+
+        let datalen = hide_file(
+            input_file.path().to_str().unwrap(),
+            cover_file.path().to_str().unwrap(),
+            &params,
+            &prng_seed,
+            Some(aes_key.clone()),
+            Some(aes_nonce.clone()),
+        )
+        .unwrap();
+
+        retrieve_file(
+            cover_file.path().to_str().unwrap(),
+            retrieved_file.path().to_str().unwrap(),
+            &params,
+            datalen,
+            &prng_seed,
+            Some(aes_key),
+            Some(aes_nonce),
         )
         .unwrap();
 
@@ -153,11 +267,13 @@ mod file_tests {
         let params = CurveParams::random(CurveType::Hybrid);
         let prng_seed = generate_random_seed();
 
-        hide_file(
+        let datalen = hide_file(
             input_file.path().to_str().unwrap(),
             cover_file.path().to_str().unwrap(),
             &params,
             &prng_seed,
+            None,
+            None,
         )
         .unwrap();
 
@@ -166,8 +282,10 @@ mod file_tests {
             cover_file.path().to_str().unwrap(),
             retrieved_file.path().to_str().unwrap(),
             &params,
-            original_data.len(),
+            datalen,
             &prng_seed,
+            None,
+            None,
         )
         .unwrap();
 

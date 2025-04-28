@@ -1,4 +1,6 @@
 use crate::error::FileShadowError;
+use aes_gcm::aead::Aead;
+use aes_gcm::{Aes256Gcm, Key, KeyInit, Nonce};
 use blake3::Hasher;
 use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
@@ -222,7 +224,7 @@ pub fn generate_random_seed() -> [u8; 32] {
 /// - sin_phase: 4 bytes (f32)
 /// - logistic_r: 4 bytes (f32)
 /// - hash_weight: 4 bytes (f32)
-/// /// The PRNG seed is appended as 32 bytes.
+/// The PRNG seed is appended as 32 bytes.
 pub fn compute_secret_key(byte_len: usize, params: &CurveParams, prng_seed: &[u8]) -> Vec<u8> {
     let mut secret_key = Vec::new();
 
@@ -248,10 +250,10 @@ pub fn compute_secret_key(byte_len: usize, params: &CurveParams, prng_seed: &[u8
 ///
 /// This function decodes the secret key back into its components.
 /// It extracts the byte length, curve parameters, and PRNG seed from the byte array.
-/// /// Returns a tuple containing:
-/// /// - byte_len: usize
-/// /// - params: CurveParams
-/// /// - prng_seed: Vec<u8> (32 bytes)
+/// Returns a tuple containing:
+///  - byte_len: usize
+///  - params: CurveParams
+///  - prng_seed: Vec<u8> (32 bytes)
 pub fn retrieve_from_secret_key(
     secret_key: &[u8],
 ) -> Result<(usize, CurveParams, Vec<u8>), FileShadowError> {
@@ -290,6 +292,84 @@ pub fn retrieve_from_secret_key(
     let prng_seed = secret_key[idx..idx + 32].to_vec();
 
     Ok((byte_len, params, prng_seed))
+}
+
+/// Encrypts the input bytes using AES-GCM with the provided key and nonce
+///
+/// This function takes the input data, key, and nonce as parameters,
+/// and returns the encrypted data as a vector of bytes.
+pub fn encrypt_bytes(input: &[u8], key: &[u8], nonce: &[u8]) -> Result<Vec<u8>, FileShadowError> {
+    if key.len() != 32 || nonce.len() != 12 {
+        return Err(FileShadowError::InvalidEncryptionKeyLength(32, key.len()));
+    }
+
+    let key: &Key<Aes256Gcm> = key.into();
+    let cipher = Aes256Gcm::new(&key);
+    let nonce = Nonce::from_slice(&nonce);
+
+    let encrypted_data = cipher.encrypt(&nonce, input)?;
+    Ok(encrypted_data)
+}
+
+/// Decrypts the input bytes using AES-GCM with the provided key and nonce
+///
+/// This function takes the encrypted data, key, and nonce as parameters,
+/// and returns the decrypted data as a vector of bytes.
+pub fn decrypt_bytes(
+    encrypted_data: &[u8],
+    key: &[u8],
+    nonce: &[u8],
+) -> Result<Vec<u8>, FileShadowError> {
+    if key.len() != 32 || nonce.len() != 12 {
+        return Err(FileShadowError::InvalidEncryptionKeyLength(32, key.len()));
+    }
+
+    let key: &Key<Aes256Gcm> = key.into();
+    let cipher = Aes256Gcm::new(&key);
+    let nonce: &[u8; 12] = nonce
+        .try_into()
+        .map_err(|_| FileShadowError::InvalidSeedSize)?;
+
+    let nonce = Nonce::from_slice(nonce); // 12-byte nonce
+    let decrypted_data = cipher.decrypt(nonce, encrypted_data)?;
+    Ok(decrypted_data)
+}
+
+/// Converts the key and nonce into a hex string representation
+///
+/// This function takes the key and nonce as byte slices,
+/// and returns a hex-encoded string.
+/// The key should be 32 bytes and the nonce should be 12 bytes.
+pub fn key_and_nonce_to_string(key: &[u8], nonce: &[u8]) -> Result<String, FileShadowError> {
+    if key.len() != 32 || nonce.len() != 12 {
+        return Err(FileShadowError::InvalidEncryptionKeyLength(32, key.len()));
+    }
+
+    // add the bytes together
+    let mut combined = Vec::new();
+    combined.extend_from_slice(key);
+    combined.extend_from_slice(nonce);
+
+    let hex_str = hex::encode(&combined);
+    Ok(hex_str)
+}
+
+/// Converts a hex string representation of key and nonce back into byte vectors
+///
+/// This function takes a hex string and decodes it into two byte vectors:
+/// - key (32 bytes)
+/// - nonce (12 bytes)
+/// Returns a tuple containing the key and nonce as byte vectors.
+pub fn string_to_key_and_nonce(hex_str: &str) -> Result<(Vec<u8>, Vec<u8>), FileShadowError> {
+    let bytes = hex::decode(hex_str)?;
+    if bytes.len() != 44 {
+        return Err(FileShadowError::InvalidSeedSize);
+    }
+
+    let key = bytes[0..32].to_vec(); // First 32 bytes for the key
+    let nonce = bytes[32..44].to_vec(); // Next 12 bytes for the nonce
+
+    Ok((key, nonce))
 }
 
 /// Convert Vec<u8> to a fixed-size [u8; 32] array
@@ -446,5 +526,83 @@ mod tests {
         assert_eq!(parmas.logistic_r, decoded_params.logistic_r);
         assert_eq!(parmas.hash_weight, decoded_params.hash_weight);
         assert_eq!(prng_seed, decoded_prng_seed.as_slice());
+    }
+
+    #[test]
+    fn test_key_and_nonce_conversion() {
+        let key = [1u8; 32];
+        let nonce = [2u8; 12];
+
+        let hex_str = key_and_nonce_to_string(&key, &nonce).unwrap();
+        let (decoded_key, decoded_nonce) = string_to_key_and_nonce(&hex_str).unwrap();
+
+        assert_eq!(key.to_vec(), decoded_key);
+        assert_eq!(nonce.to_vec(), decoded_nonce);
+    }
+
+    #[test]
+    fn test_invalid_key_and_nonce_conversion() {
+        let invalid_hex_str = "invalid_hex_string";
+        assert!(string_to_key_and_nonce(invalid_hex_str).is_err());
+
+        let key = [1u8; 32];
+        let nonce = [2u8; 12];
+
+        let hex_str = key_and_nonce_to_string(&key, &nonce).unwrap();
+        let (decoded_key, decoded_nonce) = string_to_key_and_nonce(&hex_str).unwrap();
+
+        assert_eq!(key.to_vec(), decoded_key);
+        assert_eq!(nonce.to_vec(), decoded_nonce);
+    }
+
+    #[test]
+    fn test_invalid_key_and_nonce_length() {
+        let key = [1u8; 31]; // Invalid length
+        let nonce = [2u8; 12];
+
+        assert!(key_and_nonce_to_string(&key, &nonce).is_err());
+
+        let key = [1u8; 32];
+        let nonce = [2u8; 13]; // Invalid length
+
+        assert!(key_and_nonce_to_string(&key, &nonce).is_err());
+    }
+
+    #[test]
+    fn test_invalid_encryption_key_length() {
+        let key = [1u8; 31]; // Invalid length
+        let nonce = [2u8; 12];
+
+        assert!(encrypt_bytes(&[0], &key, &nonce).is_err());
+        assert!(decrypt_bytes(&[0], &key, &nonce).is_err());
+    }
+
+    #[test]
+    fn test_encryption_decryption() {
+        let key = [1u8; 32];
+        let nonce = [2u8; 12];
+        let data = b"Hello, World!";
+
+        let encrypted_data = encrypt_bytes(data, &key, &nonce).unwrap();
+        let decrypted_data = decrypt_bytes(&encrypted_data, &key, &nonce).unwrap();
+
+        assert_eq!(data.to_vec(), decrypted_data);
+    }
+
+    #[test]
+    fn test_invalid_encryption_decryption() {
+        let key = [1u8; 32];
+        let nonce = [2u8; 12];
+        let data = b"Hello, World!";
+
+        // Test with invalid key length
+        let invalid_key = [1u8; 31]; // Invalid length
+        assert!(encrypt_bytes(data, &invalid_key, &nonce).is_err());
+        assert!(decrypt_bytes(data, &invalid_key, &nonce).is_err());
+
+        // Test with invalid nonce length
+        let invalid_nonce = [2u8; 11]; // Invalid length
+        assert!(encrypt_bytes(data, &key, &invalid_nonce).is_err());
+        assert!(decrypt_bytes(data, &key, &invalid_nonce).is_err());
     }
 }

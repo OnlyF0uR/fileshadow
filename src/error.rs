@@ -6,6 +6,10 @@ pub enum FileShadowError {
     ConversionError(std::array::TryFromSliceError),
     InvalidSeedSize,
     FileTooLarge,
+    InvalidEncryptionKeyLength(usize, usize),
+    EncryptionError(aes_gcm::Error),
+    Utf8Error(std::string::FromUtf8Error),
+    HexDecodingError(hex::FromHexError),
 }
 
 impl std::fmt::Display for FileShadowError {
@@ -31,6 +35,16 @@ impl std::fmt::Display for FileShadowError {
             FileShadowError::FileTooLarge => {
                 write!(f, "File is too large. The maximum size is 2^32 bytes.")
             }
+            FileShadowError::InvalidEncryptionKeyLength(expected, actual) => {
+                write!(
+                    f,
+                    "Invalid encryption key length. Expected: {}, Actual: {}",
+                    expected, actual
+                )
+            }
+            FileShadowError::EncryptionError(err) => err.fmt(f),
+            FileShadowError::Utf8Error(err) => err.fmt(f),
+            FileShadowError::HexDecodingError(err) => err.fmt(f),
         }
     }
 }
@@ -46,5 +60,23 @@ impl From<std::io::Error> for FileShadowError {
 impl From<std::array::TryFromSliceError> for FileShadowError {
     fn from(e: std::array::TryFromSliceError) -> Self {
         FileShadowError::ConversionError(e)
+    }
+}
+
+impl From<aes_gcm::Error> for FileShadowError {
+    fn from(err: aes_gcm::Error) -> Self {
+        FileShadowError::EncryptionError(err)
+    }
+}
+
+impl From<std::string::FromUtf8Error> for FileShadowError {
+    fn from(err: std::string::FromUtf8Error) -> Self {
+        FileShadowError::Utf8Error(err)
+    }
+}
+
+impl From<hex::FromHexError> for FileShadowError {
+    fn from(err: hex::FromHexError) -> Self {
+        FileShadowError::HexDecodingError(err)
     }
 }
