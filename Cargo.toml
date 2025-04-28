@@ -1,0 +1,20 @@
+[package]
+name = "fileshadow"
+version = "1.0.0"
+edition = "2024"
+authors = ["OnlyF0uR"]
+repository = "https://github.com/OnlyF0uR/fileshadow"
+license = "GPL-3.0"
+description = "A mathematical algorithm designed to hide files within other files using advanced cryptographic techniques."
+readme = "README.md"
+keywords = ["cryptography", "file management", "security", "file hiding"]
+categories = ["cryptography", "filesystem", "security"]
+
+[dependencies]
+rand = "0.9.1"
+rand_chacha = "0.9.0"
+blake3 = "1.8.2"
+clap = {version = "4.5.37", features = ["derive"]}
+
+[dev-dependencies]
+tempfile = "3.19.1"
