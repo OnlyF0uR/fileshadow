@@ -326,9 +326,7 @@ pub fn decrypt_bytes(
 
     let key: &Key<Aes256Gcm> = key.into();
     let cipher = Aes256Gcm::new(&key);
-    let nonce: &[u8; 12] = nonce
-        .try_into()
-        .map_err(|_| FileShadowError::InvalidSeedSize)?;
+    let nonce: &[u8; 12] = nonce.try_into()?;
 
     let nonce = Nonce::from_slice(nonce); // 12-byte nonce
     let decrypted_data = cipher.decrypt(nonce, encrypted_data)?;
@@ -381,10 +379,7 @@ fn vec_to_array_32(vec: Vec<u8>) -> Result<[u8; 32], FileShadowError> {
         return Err(FileShadowError::IncongruentCastLength(32, vec.len()));
     }
 
-    let array: [u8; 32] = vec
-        .as_slice()
-        .try_into()
-        .map_err(|_| FileShadowError::InvalidSeedSize)?;
+    let array: [u8; 32] = vec.as_slice().try_into()?;
     Ok(array)
 }
 
